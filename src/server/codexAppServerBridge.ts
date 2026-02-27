@@ -1,11 +1,11 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { mkdtemp, readFile, rm, mkdir } from 'node:fs/promises'
+import { mkdtemp, readFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { request as httpsRequest } from 'node:https'
-import { homedir } from 'node:os'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { writeFile } from 'node:fs/promises'
+import { join, dirname } from 'node:path'
+
+const prefixBin = process.env.PREFIX ? join(process.env.PREFIX, 'bin') : ''
+const shellPath = prefixBin ? join(prefixBin, 'sh') : '/bin/sh'
 
 type JsonRpcCall = {
   jsonrpc: '2.0'
@@ -36,12 +36,6 @@ type ServerRequestReply = {
     code: number
     message: string
   }
-}
-
-type WorkspaceRootsState = {
-  order: string[]
-  labels: Record<string, string>
-  active: string[]
 }
 
 type PendingServerRequest = {
@@ -82,306 +76,19 @@ function setJson(res: ServerResponse, statusCode: number, payload: unknown): voi
   res.end(JSON.stringify(payload))
 }
 
-type SkillHubEntry = {
-  name: string
-  owner: string
-  description: string
-  displayName: string
-  publishedAt: number
-  avatarUrl: string
-  url: string
-  installed: boolean
-  path?: string
-  enabled?: boolean
-}
-
-type SkillsTreeEntry = {
-  name: string
-  owner: string
-  url: string
-}
-
-type SkillsTreeCache = {
-  entries: SkillsTreeEntry[]
-  fetchedAt: number
-}
-
-type MetaJson = {
-  displayName?: string
-  owner?: string
-  slug?: string
-  latest?: { publishedAt?: number }
-}
-
-const TREE_CACHE_TTL_MS = 5 * 60 * 1000
-let skillsTreeCache: SkillsTreeCache | null = null
-const metaCache = new Map<string, { description: string; displayName: string; publishedAt: number }>()
-
-async function getGhToken(): Promise<string | null> {
-  try {
-    const proc = spawn('gh', ['auth', 'token'], { stdio: ['ignore', 'pipe', 'ignore'] })
-    let out = ''
-    proc.stdout.on('data', (d: Buffer) => { out += d.toString() })
-    return new Promise((resolve) => {
-      proc.on('close', (code) => resolve(code === 0 ? out.trim() : null))
-      proc.on('error', () => resolve(null))
-    })
-  } catch { return null }
-}
-
-async function ghFetch(url: string): Promise<Response> {
-  const token = await getGhToken()
-  const headers: Record<string, string> = {
-    Accept: 'application/vnd.github+json',
-    'User-Agent': 'codex-web-local',
-  }
-  if (token) headers.Authorization = `Bearer ${token}`
-  return fetch(url, { headers })
-}
-
-async function fetchSkillsTree(): Promise<SkillsTreeEntry[]> {
-  if (skillsTreeCache && Date.now() - skillsTreeCache.fetchedAt < TREE_CACHE_TTL_MS) {
-    return skillsTreeCache.entries
-  }
-
-  const resp = await ghFetch('https://api.github.com/repos/openclaw/skills/git/trees/main?recursive=1')
-  if (!resp.ok) throw new Error(`GitHub tree API returned ${resp.status}`)
-  const data = (await resp.json()) as { tree?: Array<{ path: string; type: string }> }
-
-  const metaPattern = /^skills\/([^/]+)\/([^/]+)\/_meta\.json$/
-  const seen = new Set<string>()
-  const entries: SkillsTreeEntry[] = []
-
-  for (const node of data.tree ?? []) {
-    const match = metaPattern.exec(node.path)
-    if (!match) continue
-    const [, owner, skillName] = match
-    const key = `${owner}/${skillName}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    entries.push({
-      name: skillName,
-      owner,
-      url: `https://github.com/openclaw/skills/tree/main/skills/${owner}/${skillName}`,
-    })
-  }
-
-  skillsTreeCache = { entries, fetchedAt: Date.now() }
-  return entries
-}
-
-async function fetchMetaBatch(entries: SkillsTreeEntry[]): Promise<void> {
-  const toFetch = entries.filter((e) => !metaCache.has(`${e.owner}/${e.name}`))
-  if (toFetch.length === 0) return
-
-  const batch = toFetch.slice(0, 50)
-  const results = await Promise.allSettled(
-    batch.map(async (e) => {
-      const rawUrl = `https://raw.githubusercontent.com/openclaw/skills/main/skills/${e.owner}/${e.name}/_meta.json`
-      const resp = await fetch(rawUrl)
-      if (!resp.ok) return
-      const meta = (await resp.json()) as MetaJson
-      metaCache.set(`${e.owner}/${e.name}`, {
-        displayName: typeof meta.displayName === 'string' ? meta.displayName : '',
-        description: typeof meta.displayName === 'string' ? meta.displayName : '',
-        publishedAt: meta.latest?.publishedAt ?? 0,
-      })
-    }),
-  )
-  void results
-}
-
-function buildHubEntry(e: SkillsTreeEntry): SkillHubEntry {
-  const cached = metaCache.get(`${e.owner}/${e.name}`)
-  return {
-    name: e.name,
-    owner: e.owner,
-    description: cached?.description ?? '',
-    displayName: cached?.displayName ?? '',
-    publishedAt: cached?.publishedAt ?? 0,
-    avatarUrl: `https://github.com/${e.owner}.png?size=40`,
-    url: e.url,
-    installed: false,
-  }
-}
-
-type InstalledSkillInfo = { name: string; path: string; enabled: boolean }
-
-async function searchSkillsHub(
-  allEntries: SkillsTreeEntry[],
-  query: string,
-  limit: number,
-  sort: string,
-  installedMap: Map<string, InstalledSkillInfo>,
-): Promise<SkillHubEntry[]> {
-  const q = query.toLowerCase().trim()
-  let filtered = q
-    ? allEntries.filter((s) => s.name.toLowerCase().includes(q) || s.owner.toLowerCase().includes(q))
-    : allEntries
-
-  const page = filtered.slice(0, Math.min(limit * 2, 200))
-  await fetchMetaBatch(page)
-
-  let results = page.map(buildHubEntry)
-
-  if (sort === 'date') {
-    results.sort((a, b) => b.publishedAt - a.publishedAt)
-  } else if (q) {
-    results.sort((a, b) => {
-      const aExact = a.name.toLowerCase() === q ? 1 : 0
-      const bExact = b.name.toLowerCase() === q ? 1 : 0
-      if (aExact !== bExact) return bExact - aExact
-      return b.publishedAt - a.publishedAt
-    })
-  }
-
-  return results.slice(0, limit).map((s) => {
-    const local = installedMap.get(s.name)
-    return local
-      ? { ...s, installed: true, path: local.path, enabled: local.enabled }
-      : s
-  })
-}
-
-function normalizeStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  const normalized: string[] = []
-  for (const item of value) {
-    if (typeof item === 'string' && item.length > 0 && !normalized.includes(item)) {
-      normalized.push(item)
-    }
-  }
-  return normalized
-}
-
-function normalizeStringRecord(value: unknown): Record<string, string> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
-  const next: Record<string, string> = {}
-  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof key === 'string' && key.length > 0 && typeof item === 'string') {
-      next[key] = item
-    }
-  }
-  return next
-}
-
-function getCodexAuthPath(): string {
-  const codexHome = process.env.CODEX_HOME?.trim()
-  return join(codexHome || join(homedir(), '.codex'), 'auth.json')
-}
-
-type CodexAuth = {
-  tokens?: {
-    access_token?: string
-    account_id?: string
-  }
-}
-
-async function readCodexAuth(): Promise<{ accessToken: string; accountId?: string } | null> {
-  try {
-    const raw = await readFile(getCodexAuthPath(), 'utf8')
-    const auth = JSON.parse(raw) as CodexAuth
-    const token = auth.tokens?.access_token
-    if (!token) return null
-    return { accessToken: token, accountId: auth.tokens?.account_id ?? undefined }
-  } catch {
-    return null
-  }
-}
-
-function getCodexGlobalStatePath(): string {
-  const codexHome = process.env.CODEX_HOME?.trim()
-  if (codexHome) {
-    return join(codexHome, '.codex-global-state.json')
-  }
-  return join(homedir(), '.codex', '.codex-global-state.json')
-}
-
-async function readWorkspaceRootsState(): Promise<WorkspaceRootsState> {
-  const statePath = getCodexGlobalStatePath()
-  let payload: Record<string, unknown> = {}
-
-  try {
-    const raw = await readFile(statePath, 'utf8')
-    const parsed = JSON.parse(raw) as unknown
-    payload = asRecord(parsed) ?? {}
-  } catch {
-    payload = {}
-  }
-
-  return {
-    order: normalizeStringArray(payload['electron-saved-workspace-roots']),
-    labels: normalizeStringRecord(payload['electron-workspace-root-labels']),
-    active: normalizeStringArray(payload['active-workspace-roots']),
-  }
-}
-
-async function writeWorkspaceRootsState(nextState: WorkspaceRootsState): Promise<void> {
-  const statePath = getCodexGlobalStatePath()
-  let payload: Record<string, unknown> = {}
-  try {
-    const raw = await readFile(statePath, 'utf8')
-    payload = asRecord(JSON.parse(raw)) ?? {}
-  } catch {
-    payload = {}
-  }
-
-  payload['electron-saved-workspace-roots'] = normalizeStringArray(nextState.order)
-  payload['electron-workspace-root-labels'] = normalizeStringRecord(nextState.labels)
-  payload['active-workspace-roots'] = normalizeStringArray(nextState.active)
-
-  await writeFile(statePath, JSON.stringify(payload), 'utf8')
-}
-
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  const raw = await readRawBody(req)
-  if (raw.length === 0) return null
-  const text = raw.toString('utf8').trim()
-  if (text.length === 0) return null
-  return JSON.parse(text) as unknown
-}
-
-async function readRawBody(req: IncomingMessage): Promise<Buffer> {
   const chunks: Uint8Array[] = []
+
   for await (const chunk of req) {
     chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)
   }
-  return Buffer.concat(chunks)
-}
 
-async function proxyTranscribe(
-  body: Buffer,
-  contentType: string,
-  authToken: string,
-  accountId?: string,
-): Promise<{ status: number; body: string }> {
-  const headers: Record<string, string | number> = {
-    'Content-Type': contentType,
-    'Content-Length': body.length,
-    Authorization: `Bearer ${authToken}`,
-    originator: 'Codex Desktop',
-    'User-Agent': `Codex Desktop/0.1.0 (${process.platform}; ${process.arch})`,
-  }
+  if (chunks.length === 0) return null
 
-  if (accountId) {
-    headers['ChatGPT-Account-Id'] = accountId
-  }
+  const raw = Buffer.concat(chunks).toString('utf8').trim()
+  if (raw.length === 0) return null
 
-  return new Promise((resolve, reject) => {
-    const req = httpsRequest(
-      'https://chatgpt.com/backend-api/transcribe',
-      { method: 'POST', headers },
-      (res) => {
-        const chunks: Buffer[] = []
-        res.on('data', (c: Buffer) => chunks.push(c))
-        res.on('end', () => resolve({ status: res.statusCode ?? 500, body: Buffer.concat(chunks).toString('utf8') }))
-        res.on('error', reject)
-      },
-    )
-    req.on('error', reject)
-    req.write(body)
-    req.end()
-  })
+  return JSON.parse(raw) as unknown
 }
 
 class AppServerProcess {
@@ -398,7 +105,8 @@ class AppServerProcess {
     if (this.process) return
 
     this.stopping = false
-    const proc = spawn('codex', ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const codexBin = prefixBin ? join(prefixBin, 'codex') : 'codex'
+    const proc = spawn(codexBin, ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'] })
     this.process = proc
 
     proc.stdout.setEncoding('utf8')
@@ -668,7 +376,8 @@ class MethodCatalog {
 
   private async runGenerateSchemaCommand(outDir: string): Promise<void> {
     await new Promise<void>((resolve, reject) => {
-      const process = spawn('codex', ['app-server', 'generate-json-schema', '--out', outDir], {
+      const codexBin = prefixBin ? join(prefixBin, 'codex') : 'codex'
+      const process = spawn(codexBin, ['app-server', 'generate-json-schema', '--out', outDir], {
         stdio: ['ignore', 'ignore', 'pipe'],
       })
 
@@ -821,23 +530,6 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
-      if (req.method === 'POST' && url.pathname === '/codex-api/transcribe') {
-        const auth = await readCodexAuth()
-        if (!auth) {
-          setJson(res, 401, { error: 'No auth token available for transcription' })
-          return
-        }
-
-        const rawBody = await readRawBody(req)
-        const incomingCt = req.headers['content-type'] ?? 'application/octet-stream'
-        const upstream = await proxyTranscribe(rawBody, incomingCt, auth.accessToken, auth.accountId)
-
-        res.statusCode = upstream.status
-        res.setHeader('Content-Type', 'application/json; charset=utf-8')
-        res.end(upstream.body)
-        return
-      }
-
       if (req.method === 'POST' && url.pathname === '/codex-api/server-requests/respond') {
         const payload = await readJsonBody(req)
         await appServer.respondToServerRequest(payload)
@@ -859,118 +551,6 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       if (req.method === 'GET' && url.pathname === '/codex-api/meta/notifications') {
         const methods = await methodCatalog.listNotificationMethods()
         setJson(res, 200, { data: methods })
-        return
-      }
-
-      if (req.method === 'GET' && url.pathname === '/codex-api/workspace-roots-state') {
-        const state = await readWorkspaceRootsState()
-        setJson(res, 200, { data: state })
-        return
-      }
-
-      if (req.method === 'PUT' && url.pathname === '/codex-api/workspace-roots-state') {
-        const payload = await readJsonBody(req)
-        const record = asRecord(payload)
-        if (!record) {
-          setJson(res, 400, { error: 'Invalid body: expected object' })
-          return
-        }
-        const nextState: WorkspaceRootsState = {
-          order: normalizeStringArray(record.order),
-          labels: normalizeStringRecord(record.labels),
-          active: normalizeStringArray(record.active),
-        }
-        await writeWorkspaceRootsState(nextState)
-        setJson(res, 200, { ok: true })
-        return
-      }
-
-      if (req.method === 'GET' && url.pathname === '/codex-api/skills-hub') {
-        try {
-          const q = url.searchParams.get('q') || ''
-          const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '50', 10) || 50, 1), 200)
-          const sort = url.searchParams.get('sort') || 'date'
-          const allEntries = await fetchSkillsTree()
-
-          const installedMap = new Map<string, InstalledSkillInfo>()
-          try {
-            const result = (await appServer.rpc('skills/list', {})) as { data?: Array<{ skills?: Array<{ name?: string; path?: string; enabled?: boolean }> }> }
-            for (const entry of result.data ?? []) {
-              for (const skill of entry.skills ?? []) {
-                if (skill.name && !installedMap.has(skill.name)) {
-                  installedMap.set(skill.name, { name: skill.name, path: skill.path ?? '', enabled: skill.enabled !== false })
-                }
-              }
-            }
-          } catch {
-            // local skills unavailable
-          }
-
-          const results = await searchSkillsHub(allEntries, q, limit, sort, installedMap)
-          setJson(res, 200, { data: results, total: allEntries.length })
-        } catch (error) {
-          setJson(res, 502, { error: getErrorMessage(error, 'Failed to fetch skills hub') })
-        }
-        return
-      }
-
-      if (req.method === 'GET' && url.pathname === '/codex-api/skills-hub/readme') {
-        try {
-          const owner = url.searchParams.get('owner') || ''
-          const name = url.searchParams.get('name') || ''
-          if (!owner || !name) {
-            setJson(res, 400, { error: 'Missing owner or name' })
-            return
-          }
-          const rawUrl = `https://raw.githubusercontent.com/openclaw/skills/main/skills/${owner}/${name}/SKILL.md`
-          const resp = await fetch(rawUrl)
-          if (!resp.ok) throw new Error(`Failed to fetch SKILL.md: ${resp.status}`)
-          const content = await resp.text()
-          setJson(res, 200, { content })
-        } catch (error) {
-          setJson(res, 502, { error: getErrorMessage(error, 'Failed to fetch SKILL.md') })
-        }
-        return
-      }
-
-      if (req.method === 'POST' && url.pathname === '/codex-api/skills-hub/install') {
-        try {
-          const payload = asRecord(await readJsonBody(req))
-          const owner = typeof payload?.owner === 'string' ? payload.owner : ''
-          const name = typeof payload?.name === 'string' ? payload.name : ''
-          if (!owner || !name) {
-            setJson(res, 400, { error: 'Missing owner or name' })
-            return
-          }
-          const skillDir = join(homedir(), '.codex', 'skills', name)
-          await mkdir(skillDir, { recursive: true })
-          const skillMdUrl = `https://raw.githubusercontent.com/openclaw/skills/main/skills/${owner}/${name}/SKILL.md`
-          const resp = await fetch(skillMdUrl)
-          if (!resp.ok) throw new Error(`Failed to fetch SKILL.md: ${resp.status}`)
-          const content = await resp.text()
-          await writeFile(join(skillDir, 'SKILL.md'), content, 'utf-8')
-          setJson(res, 200, { ok: true, path: skillDir })
-        } catch (error) {
-          setJson(res, 502, { error: getErrorMessage(error, 'Failed to install skill') })
-        }
-        return
-      }
-
-      if (req.method === 'POST' && url.pathname === '/codex-api/skills-hub/uninstall') {
-        try {
-          const payload = asRecord(await readJsonBody(req))
-          const name = typeof payload?.name === 'string' ? payload.name : ''
-          const path = typeof payload?.path === 'string' ? payload.path : ''
-          const target = path || (name ? join(homedir(), '.codex', 'skills', name) : '')
-          if (!target) {
-            setJson(res, 400, { error: 'Missing name or path' })
-            return
-          }
-          await rm(target, { recursive: true, force: true })
-          setJson(res, 200, { ok: true, deletedPath: target })
-        } catch (error) {
-          setJson(res, 502, { error: getErrorMessage(error, 'Failed to uninstall skill') })
-        }
         return
       }
 

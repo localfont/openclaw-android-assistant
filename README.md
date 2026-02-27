@@ -18,8 +18,7 @@
 
 <br />
 
-[Get it on Google Play](https://play.google.com/store/apps/details?id=gptos.intelligence.assistant) ·
-[Download APK](https://github.com/friuns2/openclaw-android-assistant/releases/latest/download/anyclaw.apk) ·
+[Download APK](https://friuns2.github.io/openclaw-android-assistant/) ·
 [OpenClaw Docs](https://docs.openclaw.ai) ·
 [Project Spec](PROJECT_SPEC.md)
 
@@ -74,7 +73,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n com.codex.mobile/.MainActivity
 ```
 
-Or install from [Google Play](https://play.google.com/store/apps/details?id=gptos.intelligence.assistant), or [download the latest APK](https://github.com/friuns2/openclaw-android-assistant/releases/latest/download/anyclaw.apk).
+Or [download the latest APK](https://friuns2.github.io/openclaw-android-assistant/) directly.
 
 ---
 
@@ -271,6 +270,6 @@ src/                                  # codex-web-local (TypeScript + Vue)
 
 **Two AI agents. One APK. Your pocket.**
 
-[Get it on Google Play](https://play.google.com/store/apps/details?id=gptos.intelligence.assistant) · [Download APK](https://github.com/friuns2/openclaw-android-assistant/releases/latest/download/anyclaw.apk) · [OpenClaw Docs](https://docs.openclaw.ai) · [Project Spec](PROJECT_SPEC.md)
+[Download APK](https://friuns2.github.io/openclaw-android-assistant/) · [OpenClaw Docs](https://docs.openclaw.ai) · [Project Spec](PROJECT_SPEC.md)
 
 </div>

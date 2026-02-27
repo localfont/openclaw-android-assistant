@@ -63,6 +63,17 @@
           @select="onSelectThread"
           @archive="onArchiveThread" @start-new-thread="onStartNewThread" @rename-project="onRenameProject"
           @remove-project="onRemoveProject" @reorder-project="onReorderProject" />
+
+        <a
+          v-if="!isSidebarCollapsed"
+          class="openclaw-dashboard-link"
+          :href="openClawDashboardUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <IconTablerExternalLink class="openclaw-dashboard-icon" />
+          <span class="openclaw-dashboard-label">OpenClaw Dashboard</span>
+        </a>
       </section>
     </template>
 
@@ -144,10 +155,14 @@ import SkillsHub from './components/content/SkillsHub.vue'
 import SidebarThreadControls from './components/sidebar/SidebarThreadControls.vue'
 import IconTablerSearch from './components/icons/IconTablerSearch.vue'
 import IconTablerX from './components/icons/IconTablerX.vue'
+import IconTablerExternalLink from './components/icons/IconTablerExternalLink.vue'
 import { useDesktopState } from './composables/useDesktopState'
 import type { ReasoningEffort, ThreadScrollState } from './types/codex'
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'codex-web-local.sidebar-collapsed.v1'
+const openClawDashboardUrl = computed(() => {
+  return `http://localhost:19001/?gatewayUrl=ws://localhost:18789`
+})
 
 const {
   projectGroups,
@@ -234,6 +249,8 @@ const filteredMessages = computed(() =>
 const liveOverlay = computed(() => selectedLiveOverlay.value)
 const composerThreadContextId = computed(() => (isHomeRoute.value ? '__new-thread__' : selectedThreadId.value))
 const isSelectedThreadInProgress = computed(() => !isHomeRoute.value && selectedThread.value?.inProgress === true)
+const DEFAULT_WORKSPACE_NAME = 'codex'
+
 const newThreadFolderOptions = computed(() => {
   const options: Array<{ value: string; label: string }> = []
   const seenCwds = new Set<string>()
@@ -246,6 +263,10 @@ const newThreadFolderOptions = computed(() => {
       value: cwd,
       label: projectDisplayNameById.value[group.projectName] ?? group.projectName,
     })
+  }
+
+  if (options.length === 0) {
+    options.push({ value: DEFAULT_WORKSPACE_NAME, label: DEFAULT_WORKSPACE_NAME })
   }
 
   return options
@@ -598,6 +619,18 @@ async function submitFirstMessageForNewThread(
 
 .new-thread-folder-dropdown :deep(.composer-dropdown-chevron) {
   @apply h-5 w-5 mt-0;
+}
+
+.openclaw-dashboard-link {
+  @apply mt-auto mx-2 mb-1 flex items-center gap-2 rounded-md px-2.5 py-2 text-sm font-medium text-orange-700 bg-orange-50 border border-orange-200 transition no-underline hover:bg-orange-100 hover:border-orange-300;
+}
+
+.openclaw-dashboard-icon {
+  @apply w-4 h-4 shrink-0;
+}
+
+.openclaw-dashboard-label {
+  @apply truncate;
 }
 
 </style>
