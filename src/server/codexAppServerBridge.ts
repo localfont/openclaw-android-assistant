@@ -89,6 +89,8 @@ type SkillHubEntry = {
   updatedAt: string
   url: string
   installed: boolean
+  path?: string
+  enabled?: boolean
 }
 
 type SkillsHubCache = {
@@ -139,20 +141,24 @@ async function fetchOpenClawSkillsTree(): Promise<SkillHubEntry[]> {
   return skills
 }
 
+type InstalledSkillInfo = { name: string; path: string; enabled: boolean }
+
 function searchSkillsHub(
   allSkills: SkillHubEntry[],
   query: string,
   limit: number,
-  installedNames: Set<string>,
+  installedMap: Map<string, InstalledSkillInfo>,
 ): SkillHubEntry[] {
   const q = query.toLowerCase().trim()
   const filtered = q
     ? allSkills.filter((s) => s.name.toLowerCase().includes(q) || s.owner.toLowerCase().includes(q))
     : allSkills
-  return filtered.slice(0, limit).map((s) => ({
-    ...s,
-    installed: installedNames.has(s.name),
-  }))
+  return filtered.slice(0, limit).map((s) => {
+    const local = installedMap.get(s.name)
+    return local
+      ? { ...s, installed: true, path: local.path, enabled: local.enabled }
+      : { ...s, installed: false }
+  })
 }
 
 function normalizeStringArray(value: unknown): string[] {
@@ -726,19 +732,21 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '50', 10) || 50, 1), 200)
           const allSkills = await fetchOpenClawSkillsTree()
 
-          let installedNames = new Set<string>()
+          const installedMap = new Map<string, InstalledSkillInfo>()
           try {
-            const result = (await appServer.rpc('skills/list', {})) as { data?: Array<{ skills?: Array<{ name?: string }> }> }
+            const result = (await appServer.rpc('skills/list', {})) as { data?: Array<{ skills?: Array<{ name?: string; path?: string; enabled?: boolean }> }> }
             for (const entry of result.data ?? []) {
               for (const skill of entry.skills ?? []) {
-                if (skill.name) installedNames.add(skill.name)
+                if (skill.name && !installedMap.has(skill.name)) {
+                  installedMap.set(skill.name, { name: skill.name, path: skill.path ?? '', enabled: skill.enabled !== false })
+                }
               }
             }
           } catch {
             // local skills unavailable, all marked as not installed
           }
 
-          const results = searchSkillsHub(allSkills, q, limit, installedNames)
+          const results = searchSkillsHub(allSkills, q, limit, installedMap)
           setJson(res, 200, { data: results, total: allSkills.length })
         } catch (error) {
           setJson(res, 502, { error: getErrorMessage(error, 'Failed to fetch skills hub') })
