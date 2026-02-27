@@ -82,6 +82,80 @@ function setJson(res: ServerResponse, statusCode: number, payload: unknown): voi
   res.end(JSON.stringify(payload))
 }
 
+type SkillHubEntry = {
+  name: string
+  owner: string
+  description: string
+  stars: number
+  updatedAt: string
+  url: string
+  installed: boolean
+}
+
+type SkillsHubCache = {
+  skills: SkillHubEntry[]
+  fetchedAt: number
+}
+
+const SKILLS_HUB_CACHE_TTL_MS = 5 * 60 * 1000
+let skillsHubCache: SkillsHubCache | null = null
+
+async function fetchOpenClawSkillsTree(): Promise<SkillHubEntry[]> {
+  if (skillsHubCache && Date.now() - skillsHubCache.fetchedAt < SKILLS_HUB_CACHE_TTL_MS) {
+    return skillsHubCache.skills
+  }
+
+  const treeUrl = 'https://api.github.com/repos/openclaw/skills/git/trees/main?recursive=1'
+  const resp = await fetch(treeUrl, {
+    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'codex-web-local' },
+  })
+  if (!resp.ok) throw new Error(`GitHub tree API returned ${resp.status}`)
+  const data = (await resp.json()) as { tree?: Array<{ path: string; type: string }> }
+  const tree = data.tree ?? []
+
+  const metaPattern = /^skills\/([^/]+)\/([^/]+)\/_meta\.json$/
+  const seen = new Set<string>()
+  const skills: SkillHubEntry[] = []
+
+  for (const node of tree) {
+    const match = metaPattern.exec(node.path)
+    if (!match) continue
+    const owner = match[1]
+    const skillName = match[2]
+    const key = `${owner}/${skillName}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    skills.push({
+      name: skillName,
+      owner,
+      description: '',
+      stars: 0,
+      updatedAt: '',
+      url: `https://github.com/openclaw/skills/tree/main/skills/${owner}/${skillName}`,
+      installed: false,
+    })
+  }
+
+  skillsHubCache = { skills, fetchedAt: Date.now() }
+  return skills
+}
+
+function searchSkillsHub(
+  allSkills: SkillHubEntry[],
+  query: string,
+  limit: number,
+  installedNames: Set<string>,
+): SkillHubEntry[] {
+  const q = query.toLowerCase().trim()
+  const filtered = q
+    ? allSkills.filter((s) => s.name.toLowerCase().includes(q) || s.owner.toLowerCase().includes(q))
+    : allSkills
+  return filtered.slice(0, limit).map((s) => ({
+    ...s,
+    installed: installedNames.has(s.name),
+  }))
+}
+
 function normalizeStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   const normalized: string[] = []
@@ -721,6 +795,32 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         }
         await writeWorkspaceRootsState(nextState)
         setJson(res, 200, { ok: true })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/skills-hub') {
+        try {
+          const q = url.searchParams.get('q') || ''
+          const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '50', 10) || 50, 1), 200)
+          const allSkills = await fetchOpenClawSkillsTree()
+
+          let installedNames = new Set<string>()
+          try {
+            const result = (await appServer.rpc('skills/list', {})) as { data?: Array<{ skills?: Array<{ name?: string }> }> }
+            for (const entry of result.data ?? []) {
+              for (const skill of entry.skills ?? []) {
+                if (skill.name) installedNames.add(skill.name)
+              }
+            }
+          } catch {
+            // local skills unavailable, all marked as not installed
+          }
+
+          const results = searchSkillsHub(allSkills, q, limit, installedNames)
+          setJson(res, 200, { data: results, total: allSkills.length })
+        } catch (error) {
+          setJson(res, 502, { error: getErrorMessage(error, 'Failed to fetch skills hub') })
+        }
         return
       }
 
