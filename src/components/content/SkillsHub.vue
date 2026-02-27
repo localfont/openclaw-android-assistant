@@ -5,17 +5,22 @@
       <p class="skills-hub-subtitle">Browse and discover skills from the OpenClaw community</p>
     </div>
 
-    <div class="skills-hub-search-wrap">
-      <IconTablerSearch class="skills-hub-search-icon" />
-      <input
-        ref="searchRef"
-        v-model="query"
-        class="skills-hub-search"
-        type="text"
-        placeholder="Search skills... (e.g. flight, docker, react)"
-        @input="onSearchInput"
-      />
-      <span v-if="totalCount > 0" class="skills-hub-count">{{ totalCount }} skills</span>
+    <div class="skills-hub-toolbar">
+      <div class="skills-hub-search-wrap">
+        <IconTablerSearch class="skills-hub-search-icon" />
+        <input
+          ref="searchRef"
+          v-model="query"
+          class="skills-hub-search"
+          type="text"
+          placeholder="Search skills... (e.g. flight, docker, react)"
+          @input="onSearchInput"
+        />
+        <span v-if="totalCount > 0" class="skills-hub-count">{{ totalCount }} skills</span>
+      </div>
+      <button class="skills-hub-sort" type="button" @click="toggleSort">
+        {{ sortLabel }}
+      </button>
     </div>
 
     <div v-if="toast" class="skills-hub-toast" :class="toastClass">{{ toast.text }}</div>
@@ -59,19 +64,23 @@ import IconTablerChevronRight from '../icons/IconTablerChevronRight.vue'
 import SkillCard from './SkillCard.vue'
 import SkillDetailModal, { type HubSkill } from './SkillDetailModal.vue'
 
+const EMPTY_SKILL: HubSkill = { name: '', owner: '', description: '', url: '', installed: false }
+
 const searchRef = ref<HTMLInputElement | null>(null)
 const query = ref('')
+const sortMode = ref<'date' | 'name'>('date')
 const results = ref<HubSkill[]>([])
 const totalCount = ref(0)
 const isLoading = ref(false)
 const error = ref('')
 const isInstalledOpen = ref(false)
 const isDetailOpen = ref(false)
-const detailSkill = ref<HubSkill>({ name: '', owner: '', description: '', stars: 0, updatedAt: '', url: '', installed: false })
+const detailSkill = ref<HubSkill>(EMPTY_SKILL)
 const toast = ref<{ text: string; type: 'success' | 'error' } | null>(null)
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 
+const sortLabel = computed(() => sortMode.value === 'date' ? 'Newest' : 'A-Z')
 const toastClass = computed(() => toast.value?.type === 'error' ? 'skills-hub-toast-error' : 'skills-hub-toast-success')
 const installedSkills = computed(() => results.value.filter((s) => s.installed))
 const browseSkills = computed(() => results.value.filter((s) => !s.installed))
@@ -82,6 +91,11 @@ function showToast(text: string, type: 'success' | 'error' = 'success'): void {
   toastTimer = setTimeout(() => { toast.value = null }, 3000)
 }
 
+function toggleSort(): void {
+  sortMode.value = sortMode.value === 'date' ? 'name' : 'date'
+  void fetchSkills(query.value)
+}
+
 async function fetchSkills(q: string): Promise<void> {
   isLoading.value = true
   error.value = ''
@@ -89,6 +103,7 @@ async function fetchSkills(q: string): Promise<void> {
     const params = new URLSearchParams()
     if (q.trim()) params.set('q', q.trim())
     params.set('limit', '100')
+    params.set('sort', sortMode.value)
     const resp = await fetch(`/codex-api/skills-hub?${params}`)
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data = (await resp.json()) as { data: HubSkill[]; total: number }
@@ -120,7 +135,7 @@ async function handleInstall(skill: HubSkill): Promise<void> {
     })
     const data = (await resp.json()) as { ok?: boolean; error?: string }
     if (!data.ok) throw new Error(data.error || 'Install failed')
-    showToast(`${skill.name} skill installed`)
+    showToast(`${skill.displayName || skill.name} skill installed`)
     isDetailOpen.value = false
     await fetchSkills(query.value)
   } catch (e) {
@@ -137,7 +152,7 @@ async function handleUninstall(skill: HubSkill): Promise<void> {
     })
     const data = (await resp.json()) as { ok?: boolean; error?: string }
     if (!data.ok) throw new Error(data.error || 'Uninstall failed')
-    showToast(`${skill.name} skill uninstalled`)
+    showToast(`${skill.displayName || skill.name} skill uninstalled`)
     isDetailOpen.value = false
     await fetchSkills(query.value)
   } catch (e) {
@@ -153,7 +168,7 @@ async function handleToggleEnabled(skill: HubSkill, enabled: boolean): Promise<v
       body: JSON.stringify({ method: 'skills/config/write', params: { path: skill.path, enabled } }),
     })
     if (!resp.ok) throw new Error('Failed to update skill')
-    showToast(`${skill.name} skill ${enabled ? 'enabled' : 'disabled'}`)
+    showToast(`${skill.displayName || skill.name} skill ${enabled ? 'enabled' : 'disabled'}`)
     await fetchSkills(query.value)
   } catch (e) {
     showToast(e instanceof Error ? e.message : 'Failed to update skill', 'error')
@@ -184,8 +199,12 @@ onMounted(() => {
   @apply text-sm text-zinc-500 m-0;
 }
 
+.skills-hub-toolbar {
+  @apply flex items-center gap-2;
+}
+
 .skills-hub-search-wrap {
-  @apply flex items-center gap-2 rounded-xl border border-zinc-200 bg-white px-3 py-2 transition focus-within:border-zinc-400 focus-within:shadow-sm;
+  @apply flex-1 flex items-center gap-2 rounded-xl border border-zinc-200 bg-white px-3 py-2 transition focus-within:border-zinc-400 focus-within:shadow-sm;
 }
 
 .skills-hub-search-icon {
@@ -198,6 +217,10 @@ onMounted(() => {
 
 .skills-hub-count {
   @apply text-xs text-zinc-400 whitespace-nowrap;
+}
+
+.skills-hub-sort {
+  @apply shrink-0 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-600 transition hover:bg-zinc-50 hover:border-zinc-300 cursor-pointer;
 }
 
 .skills-hub-toast {

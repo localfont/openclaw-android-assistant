@@ -5,42 +5,92 @@
     :class="{ 'is-disabled': skill.installed && skill.enabled === false }"
     @click="$emit('select', skill)"
   >
-    <div class="skill-card-header">
-      <span class="skill-card-name">{{ skill.name }}</span>
-      <span v-if="skill.installed && skill.enabled === false" class="skill-card-badge-disabled">Disabled</span>
-      <span v-else-if="skill.installed" class="skill-card-badge">Installed</span>
+    <div class="skill-card-top">
+      <img
+        v-if="skill.avatarUrl"
+        class="skill-card-avatar"
+        :src="skill.avatarUrl"
+        :alt="skill.owner"
+        loading="lazy"
+        @error="onAvatarError"
+      />
+      <div class="skill-card-avatar-fallback" v-else>{{ skill.owner.charAt(0) }}</div>
+      <div class="skill-card-info">
+        <div class="skill-card-header">
+          <span class="skill-card-name">{{ skill.displayName || skill.name }}</span>
+          <span v-if="skill.installed && skill.enabled === false" class="skill-card-badge-disabled">Disabled</span>
+          <span v-else-if="skill.installed" class="skill-card-badge">Installed</span>
+        </div>
+        <span class="skill-card-owner">{{ skill.owner }}</span>
+      </div>
     </div>
-    <span class="skill-card-owner">{{ skill.owner }}</span>
     <p v-if="skill.description" class="skill-card-desc">{{ skill.description }}</p>
+    <span v-if="publishedLabel" class="skill-card-date">{{ publishedLabel }}</span>
   </button>
 </template>
 
 <script setup lang="ts">
-defineProps<{
+import { computed } from 'vue'
+
+const props = defineProps<{
   skill: {
     name: string
     owner: string
     description: string
+    displayName?: string
+    publishedAt?: number
+    avatarUrl?: string
     url: string
     installed: boolean
     enabled?: boolean
   }
 }>()
 
-defineEmits<{
-  select: [skill: unknown]
-}>()
+defineEmits<{ select: [skill: unknown] }>()
+
+const publishedLabel = computed(() => {
+  const ts = props.skill.publishedAt
+  if (!ts) return ''
+  const d = new Date(ts)
+  const now = Date.now()
+  const diff = now - ts
+  if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m ago`
+  if (diff < 86400_000) return `${Math.floor(diff / 3600_000)}h ago`
+  if (diff < 2592000_000) return `${Math.floor(diff / 86400_000)}d ago`
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+})
+
+function onAvatarError(e: Event): void {
+  const img = e.target as HTMLImageElement
+  img.style.display = 'none'
+}
 </script>
 
 <style scoped>
 @reference "tailwindcss";
 
 .skill-card {
-  @apply flex flex-col gap-1 rounded-xl border border-zinc-200 bg-white p-3 text-left transition hover:border-zinc-300 hover:shadow-sm cursor-pointer;
+  @apply flex flex-col gap-1.5 rounded-xl border border-zinc-200 bg-white p-3 text-left transition hover:border-zinc-300 hover:shadow-sm cursor-pointer;
 }
 
 .skill-card.is-disabled {
   @apply opacity-50;
+}
+
+.skill-card-top {
+  @apply flex items-start gap-2.5;
+}
+
+.skill-card-avatar {
+  @apply w-8 h-8 rounded-full shrink-0 bg-zinc-100;
+}
+
+.skill-card-avatar-fallback {
+  @apply w-8 h-8 rounded-full shrink-0 bg-zinc-200 text-zinc-500 flex items-center justify-center text-xs font-medium uppercase;
+}
+
+.skill-card-info {
+  @apply flex flex-col gap-0.5 min-w-0 flex-1;
 }
 
 .skill-card-header {
@@ -65,5 +115,9 @@ defineEmits<{
 
 .skill-card-desc {
   @apply m-0 text-xs text-zinc-500 line-clamp-2;
+}
+
+.skill-card-date {
+  @apply text-[10px] text-zinc-300;
 }
 </style>
