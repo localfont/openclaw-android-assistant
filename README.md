@@ -4,6 +4,10 @@
 
 ### OpenClaw + Codex — Running Natively on Android
 
+[![Android APK Build](https://github.com/localfont/openclaw-android-assistant/actions/workflows/main.yml/badge.svg)](https://github.com/localfont/openclaw-android-assistant/actions/workflows/main.yml)
+
+
+
 [![Android](https://img.shields.io/badge/Android-7.0+-3DDC84?logo=android&logoColor=white&style=for-the-badge)](https://developer.android.com)
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-2026.2.21-FF4500?style=for-the-badge)](https://openclaw.ai)
 [![Codex](https://img.shields.io/badge/Codex_CLI-0.104.0-412991?logo=openai&logoColor=white&style=for-the-badge)](https://github.com/openai/codex)
